@@ -1,0 +1,146 @@
+#!/bin/bash
+###
+## add better handling to clean up after this script in case of error 
+
+#add cleanup of the db, like "destroydb" or something
+
+#default runs in interactive, make command lines later
+
+#check if we're in the right directory
+
+
+## add better error handling, maybe using:
+## trap ctrl-c and call ctrl_c()
+trap ctrl_c INT
+
+function ctrl_c() {
+        echo "** Trapped CTRL-C"
+
+#check if these files exist then clean them up
+	echo "cleaning up..."
+	if [ -e copy.in.diff ]; 	then rm copy.in.diff ; fi
+	if [ -e copy.in.work ]; 	then rm copy.in.work ; fi
+	if [ -e reload.ing.work ]; 	then rm reload.ing.work ; fi
+	if [ -e reload.ing.diff ]; 	then rm reload.ing.diff ; fi
+	if [ -e copy.in.bak ];		then mv copy.in.bak copy.in ; fi
+	if [ -e reload.ing.bak ];	then mv reload.ing.bak reload.ing ; fi
+exit
+}
+
+
+#vars
+MY_RAND=''
+OLD_OWNER=''
+NEW_OWNER=''
+DB_NAME=''
+#set a checkpoint so we know what we have to un-do
+CHECKPT=''
+
+####
+
+CHECKPT='notstarted'
+
+####
+
+
+
+#back up copy.in and reload.ing
+cp reload.ing reload.ing.bak
+cp copy.in copy.in.bak
+
+
+
+##get new db name
+echo "Please enter the name you would like to restore this database as: "
+read DB_NAME
+## if we match non-alphanumerics then exit
+if [[ "$DB_NAME" =~ [^a-zA-Z0-9] ]] ; then echo "invalid character, please only use alphanumerics" && exit; fi
+echo "using database name " $DB_NAME . " ..."
+
+## get new owner name
+echo "Please enter the name of the new owner of this database: "
+read NEW_OWNER
+## if we match non-alphanumerics then exit
+if [[ "$NEW_OWNER" =~ [^a-zA-Z0-9] ]] ; then echo "invalid character, please only use alphanumerics" && exit; fi
+
+
+####
+
+
+## make temp files
+touch reload.ing.work		#staging file
+touch reload.ing.diff		#temp file that contains results of substitutions
+cp reload.ing reload.ing.work	#start work in the staging file
+
+##edit reload.ing and set the db name
+cat reload.ing.work | sed -E "s/\/([A-Za-z0-9_]+\/)+//" > reload.ing.diff
+mv reload.ing.diff reload.ing.work
+
+##change the user in reload.ing
+cat reload.ing.work | sed -E "s/\+U ([A-Za-z0-9_])+/\+U $NEW_OWNER/" > reload.ing.diff
+mv reload.ing.diff reload.ing.work
+
+
+
+####
+
+
+## make temp files
+touch copy.in.work		#staging file
+touch copy.in.diff		#temp file that contains results of substitutions
+cp copy.in copy.in.work		#work in the staging file
+
+##find the old owner of the db.
+##match everything after /* PERMISSIONS */
+##grab the first line after that.
+##then grab the username off the end of that line, trim the quotes off, and save to variable.
+OLD_OWNER=`cat copy.in.work | sed -n -e '/\/\* PERMISSIONS \*\//,$p' | head -n 4 | grep -o -E "\"[A-Za-z0-9_]*\"$" | sed -e 's/"//g'`
+
+echo "The old owner appears to be $OLD_OWNER , is this correct? [y/n]"
+read YESNO
+## if the user presses anything other than "y", exit with error message, might be a script issue
+# if [ "$YESNO" == "y" ]; then echo "If the old owner displayed was incorrect, please fix the script before continuing." && exit; fi
+YESNO='' #reset
+
+## remove references to old paths
+cat copy.in.work | sed -E "s/'\/([A-Za-z0-9_]+\/)+/'/" > copy.in.diff
+mv copy.in.diff copy.in.work
+
+## change nocontinue to continue
+cat copy.in.work | sed "s/nocontinue/continue/" > copy.in.diff
+mv copy.in.diff copy.in.work
+
+## replace reference to old owner with new owner
+cat copy.in.work | sed "s/\"$OLD_OWNER\"/\"$NEW_OWNER\"/" > copy.in.diff
+mv copy.in.diff copy.in.work
+cat copy.in.work | sed "s/\authorization $OLD_OWNER/\authorization $NEW_OWNER/" > copy.in.diff
+mv copy.in.diff copy.in.work
+
+##replace references to alt_loc with ii_database
+cat copy.in.work | sed  "s/location = (alt_loc)/location = (ii_database)/" > copy.in.diff
+mv copy.in.diff copy.in.work
+
+
+
+####
+
+
+
+
+##actually do stuff
+
+cp copy.in.work copy.in
+cp reload.ing.work reload.ing
+
+createdb $DB_NAME
+bash reload.ing
+
+
+### move the originals back
+
+
+cp reload.ing.bak reload.ing
+cp copy.in.bak copy.in
+
+
+
